@@ -22,7 +22,7 @@ def start_server(server, repo)
   server = spawn server
   received = CURL_ERROR
   while [CURL_ERROR, CURL_EMPTY].include? received
-    sleep 0.5
+    sleep 0.05
     received = `curl -sS localhost:5000/repo/#{repo} 2>&1`
   end
   [server, received]
