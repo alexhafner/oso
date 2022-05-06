@@ -103,5 +103,5 @@ def authorize_model(oso: Oso, actor, action, session: Session, model):
 
     if not has_result:
         return sql.false()
-
+    print (f"combined filter: {combined_filter}")
     return combined_filter

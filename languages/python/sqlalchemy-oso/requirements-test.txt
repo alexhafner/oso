@@ -1,3 +1,4 @@
+aiosqlite==0.17.0
 pytest==7.1.2
 pytest-asyncio==0.18.3
 flask

@@ -4,7 +4,9 @@ Tests come from the relationship document & operations laid out there
 https://www.notion.so/osohq/Relationships-621b884edbc6423f93d29e6066e58d16.
 """
 import pytest
+import pytest_asyncio
 
+from sqlalchemy.future import select
 from sqlalchemy_oso.auth import authorize_model
 from sqlalchemy_oso.compat import USING_SQLAlchemy_v1_3
 
@@ -15,8 +17,8 @@ from .conftest import print_query
 def assert_query_equals(query, expected_str):
     assert " ".join(str(query).split()) == " ".join(expected_str.split())
 
-
-def test_authorize_model_basic(session, oso, fixture_data):
+@pytest.mark.asyncio
+async def test_authorize_model_basic(async_sessionmaker, oso, fixture_data):
     """Test that a simple policy with checks on non-relationship attributes is correct."""
     oso.load_str(
         """allow("user", "read", post: Post) if
@@ -32,41 +34,58 @@ def test_authorize_model_basic(session, oso, fixture_data):
              post.needs_moderation = true;"""
     )
 
-    posts = session.query(Post).filter(
-        authorize_model(oso, "user", "read", session, Post)
-    )
 
-    assert posts.count() == 5
-    assert posts.all()[0].contents == "foo public post"
-    assert posts.all()[0].id == 0
+    async with async_sessionmaker() as session:
+        filter_authorize = authorize_model(oso, "user", "read", session, Post)
+        print (f"filter_authorize: {filter_authorize}")
+        statement = select(Post).filter(filter_authorize
 
-    posts = session.query(Post).filter(
-        authorize_model(oso, "user", "write", session, Post)
-    )
+        )
+        print_query(statement)
+        results = await session.execute(statement)
+        posts = results.scalars().all()
+        print (f"posts: {posts}")
+        print (f"posts len = {len(posts)}")
+        assert len(posts) == 5
+        assert posts[0].contents == "foo public post"
+        assert posts[0].id == 0
 
-    assert posts.count() == 4
-    assert posts.all()[0].contents == "foo private post"
-    assert posts.all()[1].contents == "foo private post 2"
+        statement = select(Post).filter(
+            authorize_model(oso, "user", "write", session, Post)
+        )
+        results = await session.execute(statement)
+        posts = results.scalars().all()
 
-    posts = session.query(Post).filter(
-        authorize_model(oso, "admin", "read", session, Post)
-    )
-    assert posts.count() == 9
+        assert len(posts) == 4
+        assert posts[0].contents == "foo private post"
+        assert posts[1].contents == "foo private post 2"
 
-    posts = session.query(Post).filter(
-        authorize_model(oso, "moderator", "read", session, Post)
-    )
-    print_query(posts)
-    assert posts.all()[0].contents == "private for moderation"
-    assert posts.all()[1].contents == "public for moderation"
+        statement = select(Post).filter(
+            authorize_model(oso, "admin", "read", session, Post)
+        )
+        results = await session.execute(statement)
+        posts = results.scalars().all()
+        assert len(posts) == 9
 
-    posts = session.query(Post).filter(
-        authorize_model(oso, "guest", "read", session, Post)
-    )
-    assert posts.count() == 0
+        statement = select(Post).filter(
+            authorize_model(oso, "moderator", "read", session, Post)
+        )
+        print_query(statement)
+        results = await session.execute(statement)
+        posts = results.scalars().all()
 
+        assert posts[0].contents == "private for moderation"
+        assert posts[1].contents == "public for moderation"
 
-def test_authorize_scalar_attribute_eq(session, oso, fixture_data):
+        statement = select(Post).filter(
+            authorize_model(oso, "guest", "read", session, Post)
+        )
+        results = await session.execute(statement)
+        posts = results.scalars().all()
+        assert len(posts) == 0
+
+@pytest.mark.asyncio
+async def test_authorize_scalar_attribute_eq(async_sessionmaker, oso, fixture_data):
     """Test authorization rules on a relationship with one object equaling another."""
     # Object equals another object
     oso.load_str(
@@ -81,23 +100,29 @@ def test_authorize_scalar_attribute_eq(session, oso, fixture_data):
              post.access_level = "public";"""
     )
 
-    foo = session.query(User).filter(User.username == "foo").first()
+    async with async_sessionmaker() as session:
 
-    posts = session.query(Post).filter(authorize_model(oso, foo, "read", session, Post))
-    print_query(posts)
+        statement = select(User).filter(User.username == "foo")
+        results = await session.execute(statement)
+        foo = results.scalars().first()
 
-    def allowed(post):
-        return (
-            post.access_level == "public"
-            or post.access_level == "private"
-            and post.created_by == foo
-        )
+        statement = select(Post).filter(authorize_model(oso, foo, "read", session, Post))
+        print_query(statement)
+        results = await session.execute(statement)
+        posts = results.scalars().all()
 
-    assert posts.count() == 8
-    assert all(allowed(post) for post in posts)
+        def allowed(post):
+            return (
+                post.access_level == "public"
+                or post.access_level == "private"
+                and post.created_by == foo
+            )
 
+        assert len(posts) == 8
+        assert all(allowed(post) for post in posts)
 
-def test_authorize_scalar_attribute_condition(session, oso, fixture_data):
+@pytest.mark.asyncio
+async def test_authorize_scalar_attribute_condition(async_sessionmaker, oso, fixture_data):
     """Scalar attribute condition checks."""
     # Object equals another object
 
@@ -117,35 +142,45 @@ def test_authorize_scalar_attribute_condition(session, oso, fixture_data):
              post.created_by.is_banned = true;"""
     )
 
-    foo = session.query(User).filter(User.username == "foo").first()
+    async with async_sessionmaker() as session:
 
-    posts = session.query(Post).filter(authorize_model(oso, foo, "read", session, Post))
+        statement = select(User).filter(User.username == "foo")
+        results = await session.execute(statement)
+        foo = results.scalars().first()
 
-    def allowed(post, user):
-        return (
-            (post.access_level == "public" and not post.created_by.is_banned)
-            or post.access_level == "private"
-            and post.created_by == user
+        statement = select(Post).filter(authorize_model(oso, foo, "read", session, Post))
+        results = await session.execute(statement)
+        posts = results.scalars().all()
+
+        def allowed(post, user):
+            return (
+                (post.access_level == "public" and not post.created_by.is_banned)
+                or post.access_level == "private"
+                and post.created_by == user
+            )
+
+        assert len(posts) == 7
+        assert all(allowed(post, foo) for post in posts)
+
+        admin_statement = select(User).filter(User.username == "admin_user")
+        admin_results = await session.execute(admin_statement)
+        admin = admin_results.scalars().first()
+        posts_statement = select(Post).filter(
+            authorize_model(oso, admin, "read", session, Post)
         )
+        posts_results = await session.execute (posts_statement)
+        posts = posts_results.scalars().all()
 
-    assert posts.count() == 7
-    assert all(allowed(post, foo) for post in posts)
+        def allowed_admin(post):
+            return post.created_by.is_banned
 
-    admin = session.query(User).filter(User.username == "admin_user").first()
-    posts = session.query(Post).filter(
-        authorize_model(oso, admin, "read", session, Post)
-    )
-
-    def allowed_admin(post):
-        return post.created_by.is_banned
-
-    assert posts.count() == 6
-    for post in posts:
-        assert allowed(post, admin) or allowed_admin(post)
+        assert len(posts) == 6
+        for post in posts:
+            assert allowed(post, admin) or allowed_admin(post)
 
 
-@pytest.fixture
-def tag_test_fixture(session):
+@pytest_asyncio.fixture
+async def tag_test_fixture(async_sessionmaker):
     """Test data for tests with tags."""
     user = User(username="user")
     other_user = User(username="other_user")
@@ -182,19 +217,20 @@ def tag_test_fixture(session):
     )
 
     # HACK!
-    objects = {}
-    for (name, local) in locals().items():
-        if name != "session" and name != "objects":
-            session.add(local)
+    async with async_sessionmaker() as session:
+        objects = {}
+        for (name, local) in locals().items():
+            if name not in ["async_sessionmaker", "objects", "session"]:
+                session.add(local)
 
-        objects[name] = local
+            objects[name] = local
 
-    session.commit()
+        session.commit()
 
     return objects
 
-
-def test_in_multiple_attribute_relationship(session, oso, tag_test_fixture):
+@pytest.mark.asyncio
+async def test_in_multiple_attribute_relationship(async_sessionmaker, oso, tag_test_fixture):
     oso.load_str(
         """
         allow(_user, "read", post: Post) if post.access_level = "public";
@@ -206,21 +242,26 @@ def test_in_multiple_attribute_relationship(session, oso, tag_test_fixture):
     """
     )
 
-    posts = session.query(Post).filter(
-        authorize_model(oso, tag_test_fixture["user"], "read", session, Post)
-    )
 
-    assert tag_test_fixture["user_public_post"] in posts
-    assert tag_test_fixture["user_private_post"] in posts
-    assert tag_test_fixture["other_user_public_post"] in posts
-    assert not tag_test_fixture["other_user_private_post"] in posts
-    assert tag_test_fixture["other_user_random_post"] in posts
-    assert tag_test_fixture["other_user_foo_post"] in posts
-    assert posts.count() == 5
+    async with async_sessionmaker() as session:
+
+        statement = select(Post).filter(
+            authorize_model(oso, tag_test_fixture["user"], "read", session, Post)
+        )
+        results = await session.execute(statement)
+        posts = results.scalars().all()
+
+        assert tag_test_fixture["user_public_post"] in posts
+        assert tag_test_fixture["user_private_post"] in posts
+        assert tag_test_fixture["other_user_public_post"] in posts
+        assert not tag_test_fixture["other_user_private_post"] in posts
+        assert tag_test_fixture["other_user_random_post"] in posts
+        assert tag_test_fixture["other_user_foo_post"] in posts
+        assert len(posts) == 5
 
 
-@pytest.fixture
-def tag_nested_test_fixture(session):
+@pytest_asyncio.fixture
+async def tag_nested_test_fixture(async_sessionmaker):
     user = User(username="user")
     other_user = User(username="other_user")
     moderator = User(username="moderator", is_moderator=True)
@@ -257,13 +298,14 @@ def tag_nested_test_fixture(session):
         tags=[eng, user_posts, random],
     )
 
-    # HACK!
-    objects = {}
-    for (name, local) in locals().items():
-        if name != "session" and name != "objects":
-            session.add(local)
+    async with async_sessionmaker() as session:
+        # HACK!
+        objects = {}
+        for (name, local) in locals().items():
+            if name not in ["async_sessionmaker", "objects", "session"]:
+                session.add(local)
 
-        objects[name] = local
+            objects[name] = local
 
     session.commit()
 
@@ -272,7 +314,8 @@ def tag_nested_test_fixture(session):
 
 # TODO (dhatch): This doesn't actually exercise nested attribute code, because
 # the nested piece is in a sub expression.
-def test_nested_relationship_many_single(session, oso, tag_nested_test_fixture):
+@pytest.mark.asyncio
+async def test_nested_relationship_many_single(async_sessionmaker, oso, tag_nested_test_fixture):
     """Test that nested relationships work.
 
     post - (many) -> tags - (single) -> User
@@ -285,31 +328,36 @@ def test_nested_relationship_many_single(session, oso, tag_nested_test_fixture):
     """
     )
 
-    posts = session.query(Post).filter(
-        authorize_model(oso, tag_nested_test_fixture["user"], "read", session, Post)
-    )
-    assert tag_nested_test_fixture["user_eng_post"] in posts
-    assert tag_nested_test_fixture["user_user_post"] in posts
-    assert not tag_nested_test_fixture["random_post"] in posts
-    assert not tag_nested_test_fixture["not_tagged_post"] in posts
-    assert tag_nested_test_fixture["all_tagged_post"] in posts
-    assert posts.count() == 3
-
-    posts = session.query(Post).filter(
-        authorize_model(
-            oso, tag_nested_test_fixture["other_user"], "read", session, Post
+    async with async_sessionmaker() as session:
+        statement = select(Post).filter(
+            authorize_model(oso, tag_nested_test_fixture["user"], "read", session, Post)
         )
-    )
-    assert not tag_nested_test_fixture["user_eng_post"] in posts
-    assert not tag_nested_test_fixture["user_user_post"] in posts
-    assert tag_nested_test_fixture["random_post"] in posts
-    assert not tag_nested_test_fixture["not_tagged_post"] in posts
-    assert tag_nested_test_fixture["all_tagged_post"] in posts
-    assert posts.count() == 2
+        results = await session.execute(statement)
+        posts = results.scalars().all()
+        assert tag_nested_test_fixture["user_eng_post"] in posts
+        assert tag_nested_test_fixture["user_user_post"] in posts
+        assert not tag_nested_test_fixture["random_post"] in posts
+        assert not tag_nested_test_fixture["not_tagged_post"] in posts
+        assert tag_nested_test_fixture["all_tagged_post"] in posts
+        assert len(posts) == 3
+
+        statement = select(Post).filter(
+            authorize_model(
+                oso, tag_nested_test_fixture["other_user"], "read", session, Post
+            )
+        )
+        results = await session.execute()
+        posts = results.scalars().all()
+        assert not tag_nested_test_fixture["user_eng_post"] in posts
+        assert not tag_nested_test_fixture["user_user_post"] in posts
+        assert tag_nested_test_fixture["random_post"] in posts
+        assert not tag_nested_test_fixture["not_tagged_post"] in posts
+        assert tag_nested_test_fixture["all_tagged_post"] in posts
+        assert len(posts) == 2
 
 
-@pytest.fixture
-def tag_nested_many_many_test_fixture(session):
+@pytest_asyncio.fixture
+async def tag_nested_many_many_test_fixture(async_sessionmaker):
     eng = Tag(name="eng")
     user_posts = Tag(name="user_posts")
     random = Tag(name="random", is_public=True)
@@ -355,13 +403,14 @@ def tag_nested_many_many_test_fixture(session):
         tags=[other],
     )
 
-    # HACK!
-    objects = {}
-    for (name, local) in locals().items():
-        if name != "session" and name != "objects":
-            session.add(local)
+    async with async_sessionmaker() as session:
+        # HACK!
+        objects = {}
+        for (name, local) in locals().items():
+            if name not in ["async_sessionmaker", "objects", "session"]:
+                session.add(local)
 
-        objects[name] = local
+            objects[name] = local
 
     user.posts += [
         user_eng_post,
@@ -375,9 +424,8 @@ def tag_nested_many_many_test_fixture(session):
     session.commit()
 
     return objects
-
-
-def test_nested_relationship_many_many(session, oso, tag_nested_many_many_test_fixture):
+@pytest.mark.asyncio
+async def test_nested_relationship_many_many(async_sessionmaker, oso, tag_nested_many_many_test_fixture):
     """Test that nested relationships work.
 
     post - (many) -> tags - (many) -> User
@@ -392,31 +440,35 @@ def test_nested_relationship_many_many(session, oso, tag_nested_many_many_test_f
     """
     )
 
-    posts = session.query(Post).filter(
-        authorize_model(
-            oso, tag_nested_many_many_test_fixture["user"], "read", session, Post
-        )
-    )
-    assert tag_nested_many_many_test_fixture["user_eng_post"] in posts
-    assert tag_nested_many_many_test_fixture["user_user_post"] in posts
-    assert not tag_nested_many_many_test_fixture["random_post"] in posts
-    assert not tag_nested_many_many_test_fixture["not_tagged_post"] in posts
-    assert tag_nested_many_many_test_fixture["all_tagged_post"] in posts
+    async with async_sessionmaker() as session:
 
-    posts = session.query(Post).filter(
-        authorize_model(
-            oso, tag_nested_many_many_test_fixture["other_user"], "read", session, Post
-        )
-    )
-    assert not tag_nested_many_many_test_fixture["user_eng_post"] in posts
-    assert not tag_nested_many_many_test_fixture["user_user_post"] in posts
-    assert tag_nested_many_many_test_fixture["random_post"] in posts
-    assert not tag_nested_many_many_test_fixture["not_tagged_post"] in posts
-    assert tag_nested_many_many_test_fixture["all_tagged_post"] in posts
+        results = await session.execute(select(Post).filter(
+            authorize_model(
+                oso, tag_nested_many_many_test_fixture["user"], "read", session, Post
+            )
+        ))
+        posts = results.scalars().all()
+        assert tag_nested_many_many_test_fixture["user_eng_post"] in posts
+        assert tag_nested_many_many_test_fixture["user_user_post"] in posts
+        assert not tag_nested_many_many_test_fixture["random_post"] in posts
+        assert not tag_nested_many_many_test_fixture["not_tagged_post"] in posts
+        assert tag_nested_many_many_test_fixture["all_tagged_post"] in posts
 
+        results = await session.execute(select(Post).filter(
+            authorize_model(
+                oso, tag_nested_many_many_test_fixture["other_user"], "read", session, Post
+            )
+        ))
+        posts = results.scalars().all()
+        assert not tag_nested_many_many_test_fixture["user_eng_post"] in posts
+        assert not tag_nested_many_many_test_fixture["user_user_post"] in posts
+        assert tag_nested_many_many_test_fixture["random_post"] in posts
+        assert not tag_nested_many_many_test_fixture["not_tagged_post"] in posts
+        assert tag_nested_many_many_test_fixture["all_tagged_post"] in posts
 
-def test_nested_relationship_many_many_constrained(
-    session, oso, tag_nested_many_many_test_fixture
+@pytest.mark.asyncio
+async def test_nested_relationship_many_many_constrained(
+    async_sessionmaker, oso, tag_nested_many_many_test_fixture
 ):
     """Test that nested relationships work.
 
@@ -431,19 +483,22 @@ def test_nested_relationship_many_many_constrained(
     """
     )
 
-    posts = session.query(Post).filter(
-        authorize_model(
-            oso, tag_nested_many_many_test_fixture["user"], "read", session, Post
+    async with async_sessionmaker() as session:
+        statement = select(Post).filter(
+            authorize_model(
+                oso, tag_nested_many_many_test_fixture["user"], "read", session, Post
+            )
         )
-    )
-    assert tag_nested_many_many_test_fixture["user_eng_post"] in posts
-    assert tag_nested_many_many_test_fixture["user_user_post"] in posts
-    assert not tag_nested_many_many_test_fixture["random_post"] in posts
-    assert not tag_nested_many_many_test_fixture["not_tagged_post"] in posts
-    assert tag_nested_many_many_test_fixture["all_tagged_post"] in posts
+        results = await session.execute(statement)
+        posts = results.scalars().all()
+        assert tag_nested_many_many_test_fixture["user_eng_post"] in posts
+        assert tag_nested_many_many_test_fixture["user_user_post"] in posts
+        assert not tag_nested_many_many_test_fixture["random_post"] in posts
+        assert not tag_nested_many_many_test_fixture["not_tagged_post"] in posts
+        assert tag_nested_many_many_test_fixture["all_tagged_post"] in posts
 
-
-def test_nested_relationship_many_many_many_constrained(session, engine, oso):
+@pytest.mark.asyncio
+async def test_nested_relationship_many_many_many_constrained(async_sessionmaker, engine, oso):
     """Test that nested relationships work.
 
     post - (many) -> tags - (many) -> category - (many) -> User
@@ -471,106 +526,109 @@ def test_nested_relationship_many_many_many_constrained(session, engine, oso):
     foo_post_2 = Post(contents="foo_post_2", tags=[foo_tag])
     public_post = Post(contents="public_post", tags=[both_tag], access_level="public")
 
-    session.add_all(
-        [
-            foo,
-            bar,
-            foo_category,
-            bar_category,
-            both_category,
-            foo_tag,
-            bar_tag,
-            both_tag,
-            foo_post,
-            bar_post,
-            both_post,
-            none_post,
-            foo_post_2,
-            public_category,
-            public_post,
-        ]
-    )
-    session.commit()
+    async with async_sessionmaker() as session:
+        session.add_all(
+            [
+                foo,
+                bar,
+                foo_category,
+                bar_category,
+                both_category,
+                foo_tag,
+                bar_tag,
+                both_tag,
+                foo_post,
+                bar_post,
+                both_post,
+                none_post,
+                foo_post_2,
+                public_category,
+                public_post,
+            ]
+        )
+        await session.commit()
 
     # A user can read a post that they are the moderator of the category of.
-    policy = """allow(user, "read", post: Post) if
-                  tag in post.tags and
-                  category in tag.categories and
-                  moderator in category.users
-                  and moderator = user;"""
-    oso.load_str(policy)
+        policy = """allow(user, "read", post: Post) if
+                    tag in post.tags and
+                    category in tag.categories and
+                    moderator in category.users
+                    and moderator = user;"""
+        oso.load_str(policy)
 
-    posts = session.query(Post).filter(authorize_model(oso, foo, "read", session, Post))
-    posts = posts.all()
+        results = await session.execute(select(Post).filter(authorize_model(oso, foo, "read", session, Post)))
+        posts = results.scalars().all()
 
-    assert foo_post in posts
-    assert both_post in posts
-    assert public_post in posts
-    assert foo_post_2 in posts
-    assert bar_post not in posts
-    assert len(posts) == 4
+        assert foo_post in posts
+        assert both_post in posts
+        assert public_post in posts
+        assert foo_post_2 in posts
+        assert bar_post not in posts
+        assert len(posts) == 4
 
-    posts = session.query(Post).filter(authorize_model(oso, bar, "read", session, Post))
-    posts = posts.all()
+        results = await session.execute(select(Post).filter(authorize_model(oso, bar, "read", session, Post)))
+        posts = results.scalars().all()
 
-    assert bar_post in posts
-    assert both_post in posts
-    assert public_post in posts
-    assert foo_post not in posts
-    assert foo_post_2 not in posts
-    assert len(posts) == 3
+        assert bar_post in posts
+        assert both_post in posts
+        assert public_post in posts
+        assert foo_post not in posts
+        assert foo_post_2 not in posts
+        assert len(posts) == 3
 
-    oso.clear_rules()
+        oso.clear_rules()
 
-    # A user can read a post that they are the moderator of the category of if the
-    # tag is public.
-    policy += """allow(user, "read_2", post: Post) if
-                   tag in post.tags and
-                   tag.is_public = true and
-                   category in tag.categories and
-                   moderator in category.users
-                   and moderator = user;"""
-    oso.load_str(policy)
+        # A user can read a post that they are the moderator of the category of if the
+        # tag is public.
+        policy += """allow(user, "read_2", post: Post) if
+                    tag in post.tags and
+                    tag.is_public = true and
+                    category in tag.categories and
+                    moderator in category.users
+                    and moderator = user;"""
+        oso.load_str(policy)
 
-    posts = session.query(Post).filter(
-        authorize_model(oso, bar, "read_2", session, Post)
-    )
+        results = await session.execute(select(Post).filter(
+            authorize_model(oso, bar, "read_2", session, Post)
+        ))
 
-    posts = posts.all()
+        posts = results.scalars().all()
 
-    # Only the both tag is public.
-    assert both_post in posts
-    assert public_post in posts
-    assert bar_post not in posts
-    assert foo_post not in posts
-    assert foo_post_2 not in posts
-    assert len(posts) == 2
+        # Only the both tag is public.
+        assert both_post in posts
+        assert public_post in posts
+        assert bar_post not in posts
+        assert foo_post not in posts
+        assert foo_post_2 not in posts
+        assert len(posts) == 2
 
-    oso.clear_rules()
+        oso.clear_rules()
 
-    # A user can read a post that they are the moderator of the category of if the
-    # tag is public and the category name is public.
-    policy += """allow(user, "read_3", post: Post) if
-                   post.access_level = "public" and
-                   tag in post.tags and
-                   tag.is_public = true and
-                   category in tag.categories and
-                   category.name = "public" and
-                   moderator in category.users and
-                   moderator = user;"""
-    oso.load_str(policy)
+        # A user can read a post that they are the moderator of the category of if the
+        # tag is public and the category name is public.
+        policy += """allow(user, "read_3", post: Post) if
+                    post.access_level = "public" and
+                    tag in post.tags and
+                    tag.is_public = true and
+                    category in tag.categories and
+                    category.name = "public" and
+                    moderator in category.users and
+                    moderator = user;"""
+        oso.load_str(policy)
 
-    posts = session.query(Post).filter(
-        authorize_model(oso, bar, "read_3", session, Post)
-    )
-    print_query(posts)
-    posts = posts.all()
+        statement = select(Post).filter(
+            authorize_model(oso, bar, "read_3", session, Post)
+        )
+        print_query(statement)
+        results = await session.execute(statement)
 
-    # Only the both tag is public but the category name is not correct.
-    assert len(posts) == 1
+        posts = results.scalars().all()
 
+        # Only the both tag is public but the category name is not correct.
+        assert len(posts) == 1
 
-def test_partial_in_collection(session, oso, tag_nested_many_many_test_fixture):
+@pytest.mark.asyncio
+async def test_partial_in_collection(async_sessionmaker, oso, tag_nested_many_many_test_fixture):
     oso.load_str(
         """
         allow(user, "read", post: Post) if post in user.posts;
@@ -578,11 +636,13 @@ def test_partial_in_collection(session, oso, tag_nested_many_many_test_fixture):
     )
 
     user = tag_nested_many_many_test_fixture["user"]
-    posts = session.query(Post).filter(
-        authorize_model(oso, user, "read", session, Post)
-    )
-    print_query(posts)
-    posts = posts.all()
+    async with async_sessionmaker() as session:
+        statement = select(Post).filter(
+            authorize_model(oso, user, "read", session, Post)
+        )
+        print_query(statement)
+        results = await session.execute(statement)
+        posts = results.scalars().all()
 
     assert tag_nested_many_many_test_fixture["user_eng_post"] in posts
     assert tag_nested_many_many_test_fixture["user_user_post"] in posts
@@ -594,10 +654,10 @@ def test_partial_in_collection(session, oso, tag_nested_many_many_test_fixture):
 
     user = tag_nested_many_many_test_fixture["other_user"]
     posts = (
-        session.query(Post)
+        await session.execute(select(Post)
         .filter(authorize_model(oso, user, "read", session, Post))
         .all()
-    )
+    ))
     assert tag_nested_many_many_test_fixture["user_eng_post"] not in posts
     assert tag_nested_many_many_test_fixture["user_user_post"] not in posts
     assert tag_nested_many_many_test_fixture["random_post"] in posts
@@ -605,37 +665,39 @@ def test_partial_in_collection(session, oso, tag_nested_many_many_test_fixture):
     assert tag_nested_many_many_test_fixture["all_tagged_post"] not in posts
     assert len(posts) == 1
 
-
-def test_empty_constraints_in(session, oso, tag_nested_many_many_test_fixture):
+@pytest.mark.asyncio
+async def test_empty_constraints_in(async_sessionmaker, oso, tag_nested_many_many_test_fixture):
     oso.load_str("""allow(_, "read", post: Post) if _tag in post.tags;""")
     user = tag_nested_many_many_test_fixture["user"]
-    posts = session.query(Post).filter(
-        authorize_model(oso, user, "read", session, Post)
-    )
+    async with async_sessionmaker() as session:
+        results = await session.execute(select(Post).filter(
+            authorize_model(oso, user, "read", session, Post)
+        ))
+        posts = results.scalars().all()
 
-    if USING_SQLAlchemy_v1_3:
-        true_clause = ""
-    else:
-        # NOTE(gj): The trivial TRUE constraint is not compiled away in
-        # SQLAlchemy 1.4.
-        true_clause = " AND 1 = 1"
+        if USING_SQLAlchemy_v1_3:
+            true_clause = ""
+        else:
+            # NOTE(gj): The trivial TRUE constraint is not compiled away in
+            # SQLAlchemy 1.4.
+            true_clause = " AND 1 = 1"
 
-    assert str(posts) == (
-        "SELECT posts.id AS posts_id, posts.contents AS posts_contents, posts.title AS"
-        + " posts_title, posts.access_level AS posts_access_level,"
-        + " posts.created_by_id AS posts_created_by_id, posts.needs_moderation AS posts_needs_moderation"
-        + " \nFROM posts"
-        + " \nWHERE EXISTS (SELECT 1"
-        + " \nFROM post_tags, tags"
-        + f" \nWHERE posts.id = post_tags.post_id AND tags.name = post_tags.tag_id{true_clause})"
-    )
-    posts = posts.all()
-    assert len(posts) == 5
-    assert tag_nested_many_many_test_fixture["not_tagged_post"] not in posts
+        assert str(posts) == (
+            "SELECT posts.id AS posts_id, posts.contents AS posts_contents, posts.title AS"
+            + " posts_title, posts.access_level AS posts_access_level,"
+            + " posts.created_by_id AS posts_created_by_id, posts.needs_moderation AS posts_needs_moderation"
+            + " \nFROM posts"
+            + " \nWHERE EXISTS (SELECT 1"
+            + " \nFROM post_tags, tags"
+            + f" \nWHERE posts.id = post_tags.post_id AND tags.name = post_tags.tag_id{true_clause})"
+        )
+        posts = posts.all()
+        assert len(posts) == 5
+        assert tag_nested_many_many_test_fixture["not_tagged_post"] not in posts
 
-
-def test_in_with_constraints_but_no_matching_objects(
-    session, oso, tag_nested_many_many_test_fixture
+@pytest.mark.asyncio
+async def test_in_with_constraints_but_no_matching_objects(
+    async_sessionmaker, oso, tag_nested_many_many_test_fixture
 ):
     oso.load_str(
         """
@@ -645,23 +707,25 @@ def test_in_with_constraints_but_no_matching_objects(
     """
     )
     user = tag_nested_many_many_test_fixture["user"]
-    posts = session.query(Post).filter(
-        authorize_model(oso, user, "read", session, Post)
-    )
-    assert str(posts) == (
-        "SELECT posts.id AS posts_id, posts.contents AS posts_contents, posts.title AS posts_title,"
-        + " posts.access_level AS posts_access_level,"
-        + " posts.created_by_id AS posts_created_by_id, posts.needs_moderation AS posts_needs_moderation"
-        + " \nFROM posts"
-        + " \nWHERE EXISTS (SELECT 1"
-        + " \nFROM post_tags, tags"
-        + " \nWHERE posts.id = post_tags.post_id AND tags.name = post_tags.tag_id AND tags.name = ?)"
-    )
-    posts = posts.all()
-    assert len(posts) == 0
+    async with async_sessionmaker() as session:
+        results = await session.execute(select(Post).filter(
+            authorize_model(oso, user, "read", session, Post)
+        ))
+        posts = results.scalars().all()
+        assert str(posts) == (
+            "SELECT posts.id AS posts_id, posts.contents AS posts_contents, posts.title AS posts_title,"
+            + " posts.access_level AS posts_access_level,"
+            + " posts.created_by_id AS posts_created_by_id, posts.needs_moderation AS posts_needs_moderation"
+            + " \nFROM posts"
+            + " \nWHERE EXISTS (SELECT 1"
+            + " \nFROM post_tags, tags"
+            + " \nWHERE posts.id = post_tags.post_id AND tags.name = post_tags.tag_id AND tags.name = ?)"
+        )
+        posts = posts.all()
+        assert len(posts) == 0
 
-
-def test_redundant_in_on_same_field(session, oso, tag_nested_many_many_test_fixture):
+@pytest.mark.asyncio
+async def test_redundant_in_on_same_field(async_sessionmaker, oso, tag_nested_many_many_test_fixture):
     oso.load_str(
         """
         allow(_, "read", post: Post) if
@@ -669,17 +733,17 @@ def test_redundant_in_on_same_field(session, oso, tag_nested_many_many_test_fixt
             and tag.name = "random" and tag2.is_public = true;
         """
     )
+    async with async_sessionmaker() as session:
+        posts = await session.execute(select(Post).filter(
+            authorize_model(oso, "user", "read", session, Post)
+        ))
 
-    posts = session.query(Post).filter(
-        authorize_model(oso, "user", "read", session, Post)
-    )
+        posts = posts.all()
+        assert len(posts) == 2
 
-    posts = posts.all()
-    assert len(posts) == 2
-
-
+@pytest.mark.asyncio
 @pytest.mark.xfail(reason="Unification between fields of partials not supported.")
-def test_unify_ins(session, oso, tag_nested_many_many_test_fixture):
+async def test_unify_ins(async_sessionmaker, oso, tag_nested_many_many_test_fixture):
     oso.load_str(
         """
         allow(_, _, post) if
@@ -690,16 +754,18 @@ def test_unify_ins(session, oso, tag_nested_many_many_test_fixture):
             tag2.name <= "z";
         """
     )
+    async with async_sessionmaker() as session:
+        statement = select(Post).filter(
+            authorize_model(oso, "user", "read", session, Post)
+        )
+        results = await session.execute(statement)
+        posts = results.scalars().all()
 
-    posts = session.query(Post).filter(
-        authorize_model(oso, "user", "read", session, Post)
-    )
+        assert len(posts) == 1
 
-    assert posts.count() == 1
-
-
+@pytest.mark.asyncio
 @pytest.mark.xfail(reason="Cannot compare item in subquery to outer item.")
-def test_deeply_nested_in(session, oso, tag_nested_many_many_test_fixture):
+async def test_deeply_nested_in(async_sessionmaker, oso, tag_nested_many_many_test_fixture):
     oso.load_str(
         """
         allow(_, _, post: Post) if
@@ -709,41 +775,43 @@ def test_deeply_nested_in(session, oso, tag_nested_many_many_test_fixture):
             post in baz.created_by.posts and post.id > 4;
     """
     )
+    async with async_sessionmaker() as session:
+        statement = select(Post).filter(
+            authorize_model(oso, "user", "read", session, Post)
+        )
+        results = await session.execute(statement)
+        posts = results.scalars().all()
 
-    posts = session.query(Post).filter(
-        authorize_model(oso, "user", "read", session, Post)
-    )
+        query_str = """
+            SELECT posts.id AS posts_id, posts.contents AS posts_contents, posts.title AS posts_title, posts.access_level AS
+            posts_access_level, posts.created_by_id AS posts_created_by_id, posts.needs_moderation AS
+            posts_needs_moderation
+            FROM posts
+            WHERE (EXISTS (SELECT 1
+            FROM users
+            WHERE users.id = posts.created_by_id AND (EXISTS (SELECT 1
+            FROM posts
+            WHERE users.id = posts.created_by_id AND posts.id > ? AND (EXISTS (SELECT 1
+            FROM users
+            WHERE users.id = posts.created_by_id AND (EXISTS (SELECT 1
+            FROM posts
+            WHERE users.id = posts.created_by_id AND posts.id > ? AND (EXISTS (SELECT 1
+            FROM users
+            WHERE users.id = posts.created_by_id AND (EXISTS (SELECT 1
+            FROM posts
+            WHERE users.id = posts.created_by_id AND posts.id > ?)))))))))))) AND (EXISTS (SELECT 1
+            FROM users
+            WHERE users.id = posts.created_by_id AND (EXISTS (SELECT 1
+            FROM posts
+            WHERE users.id = posts.created_by_id)))) AND posts.id > ? AND posts.id =
+        """
 
-    query_str = """
-        SELECT posts.id AS posts_id, posts.contents AS posts_contents, posts.title AS posts_title, posts.access_level AS
-        posts_access_level, posts.created_by_id AS posts_created_by_id, posts.needs_moderation AS
-        posts_needs_moderation
-        FROM posts
-        WHERE (EXISTS (SELECT 1
-        FROM users
-        WHERE users.id = posts.created_by_id AND (EXISTS (SELECT 1
-        FROM posts
-        WHERE users.id = posts.created_by_id AND posts.id > ? AND (EXISTS (SELECT 1
-        FROM users
-        WHERE users.id = posts.created_by_id AND (EXISTS (SELECT 1
-        FROM posts
-        WHERE users.id = posts.created_by_id AND posts.id > ? AND (EXISTS (SELECT 1
-        FROM users
-        WHERE users.id = posts.created_by_id AND (EXISTS (SELECT 1
-        FROM posts
-        WHERE users.id = posts.created_by_id AND posts.id > ?)))))))))))) AND (EXISTS (SELECT 1
-        FROM users
-        WHERE users.id = posts.created_by_id AND (EXISTS (SELECT 1
-        FROM posts
-        WHERE users.id = posts.created_by_id)))) AND posts.id > ? AND posts.id =
-    """
+        assert_query_equals(statement, query_str)
+        assert len(posts) == 1
 
-    assert_query_equals(posts, query_str)
-    assert posts.count() == 1
-
-
+@pytest.mark.asyncio
 @pytest.mark.xfail(reason="Intersection doesn't work in sqlalchemy")
-def test_in_intersection(session, oso, tag_nested_many_many_test_fixture):
+async def test_in_intersection(async_sessionmaker, oso, tag_nested_many_many_test_fixture):
     oso.load_str(
         """
         allow(_, _, post: Post) if
@@ -753,18 +821,22 @@ def test_in_intersection(session, oso, tag_nested_many_many_test_fixture):
     """
     )
 
-    posts = session.query(Post).filter(
-        authorize_model(oso, "user", "read", session, Post)
-    )
+    async with async_sessionmaker() as session:
+        statement = select(Post).filter(
+            authorize_model(oso, "user", "read", session, Post)
+        )
+        results = await session.execute(statement)
+        posts = results.scalars().all()
 
-    # TODO (dhatch): Add query in here when this works.
-    assert_query_equals(posts, "")
+        # TODO (dhatch): Add query in here when this works.
+        assert_query_equals(statement, "")
 
-    assert posts.count() == 4
+        assert len(posts) == 4
 
 
 # TODO combine with test in test_django_oso.
-def test_partial_isa_with_path(session, oso, tag_nested_many_many_test_fixture):
+@pytest.mark.asyncio
+async def test_partial_isa_with_path(async_sessionmaker, oso, tag_nested_many_many_test_fixture):
     oso.load_str(
         """
             allow(user, _, post: Post) if
@@ -782,27 +854,29 @@ def test_partial_isa_with_path(session, oso, tag_nested_many_many_test_fixture):
     )
 
     user = tag_nested_many_many_test_fixture["user"]
-    posts = session.query(Post).filter(
-        authorize_model(oso, user, "read", session, Post)
-    )
-    # Should only get posts created by user.
-    posts = posts.all()
-    for post in posts:
-        assert post.created_by.username == "user"
+    async with async_sessionmaker() as session:
+        results = await session.execute(select(Post).filter(
+            authorize_model(oso, user, "read", session, Post)
+        ))
+        # Should only get posts created by user.
+        posts = results.scalars().all()
+        for post in posts:
+            assert post.created_by.username == "user"
 
-    assert len(posts) == 5
+        assert len(posts) == 5
 
-    tags = session.query(Tag).filter(authorize_model(oso, user, "read", session, Tag))
-    print_query(tags)
-    # Should only get tags created by user.
-    tags = tags.all()
-    for tag in tags:
-        assert any(post.created_by.username == "user" for post in tag.posts)
+        statement = select(Tag).filter(authorize_model(oso, user, "read", session, Tag))
+        results = await session.execute(statement)
+        tags = results.scalars().all
 
-    assert len(tags) == 4
+        print_query(statement)
+        for tag in tags:
+            assert any(post.created_by.username == "user" for post in tag.posts)
 
+        assert len(tags) == 4
 
-def test_two_level_isa_with_path(session, oso, tag_nested_many_many_test_fixture):
+@pytest.mark.asyncio
+async def test_two_level_isa_with_path(async_sessionmaker, oso, tag_nested_many_many_test_fixture):
     oso.load_str(
         """
             allow(user, _, post: Post) if
@@ -816,16 +890,19 @@ def test_two_level_isa_with_path(session, oso, tag_nested_many_many_test_fixture
     )
 
     user = tag_nested_many_many_test_fixture["user"]
-    posts = session.query(Post).filter(
-        authorize_model(oso, user, "read", session, Post)
-    )
-    print_query(posts)
-    # Should only get posts created by user.
-    posts = posts.all()
-    for post in posts:
-        assert post.created_by.username == "user"
+    async with async_sessionmaker() as session:
+        statement = select(Post).filter(
+            authorize_model(oso, user, "read", session, Post)
+        )
+        print_query(statement)
+        results = await session.execute(statement)
 
-    assert len(posts) == 5
+        # Should only get posts created by user.
+        posts = results.scalars().all()
+        for post in posts:
+            assert post.created_by.username == "user"
+
+        assert len(posts) == 5
 
 
 # TODO test_nested_relationship_single_many
